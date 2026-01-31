@@ -1,0 +1,1 @@
+Put peptide_mapping.pkl、protein_mapping.pkl、pti_adj_matrix.csv、sim_adj_matrix.csv and total_pti.xlsx here.
