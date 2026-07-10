@@ -1,0 +1,21 @@
+# PEARL fusion model inference environment
+# Create: conda env create -f environment.yml && conda activate pearl
+#
+# Note: PyTorch and DGL must be installed in the version matching your CUDA/CPU setup.
+# The pip section below gives minimum-working references; GPU users should first install
+# torch/dgl matching their CUDA from the official sites, then install the rest.
+name: pearl
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - pip
+  - pip:
+      - torch>=2.0        # install the version matching your CUDA/CPU from pytorch.org
+      - dgl>=1.1          # install the version matching your CUDA/CPU from dgl.ai
+      - numpy>=1.23
+      - pandas>=1.5
+      - scikit-learn>=1.1
+      - biopython>=1.81   # BLAST/SW sequence similarity view (sequence view)
+      - rdkit>=2022.9     # Morgan fingerprint (only needed when seq_sim_kind=morgan; not required for the blast path)

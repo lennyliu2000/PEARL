@@ -1,0 +1,269 @@
+% Methods draft aligned to the current formal PEARL implementation
+% Main code path: train_pearl_hgt_inductive.py
+
+\section{Materials and methods}
+
+\subsection{Dataset and benchmark construction}
+
+The benchmark dataset used in this study was constructed as a balanced peptide--target interaction collection comprising 17,978 labeled peptide--target pairs, including 8,989 positive pairs and 8,989 negative pairs. After removing duplicated sequence entries at the node level, the dataset contained 6,603 unique peptides and 3,972 unique protein targets. Each sample was represented as a triplet $(p_i, t_j, y_{ij})$, where $p_i$ denotes a peptide sequence, $t_j$ denotes a protein target sequence, and $y_{ij} \in \{0,1\}$ indicates whether the peptide--target pair was annotated as non-interacting or interacting.
+
+For each peptide and target protein, auxiliary sequence-derived resources were prepared in advance, including pretrained protein language model representations and pairwise similarity matrices. In the formal PEARL setting used for the main model description, peptide and target features were obtained from ProtT5 embeddings, and peptide--peptide similarity was used to support graph construction and recommendation refinement. Alternative feature combinations and target-side similarity relations were retained as extended variants for ablation analyses.
+
+\subsection{Data splitting and evaluation protocols}
+
+To evaluate both conventional interaction prediction and practical target recommendation, PEARL was assessed under both random and cluster-based data splitting protocols. The random benchmark followed a five-fold split provided in the file \texttt{random\_5fold\_seed42\_from\_hgt.pt}. Cluster-based evaluation was performed using sequence-clustered splits at multiple similarity thresholds, including \texttt{new\_peptide\_balanced}, \texttt{new\_protein\_balanced}, and \texttt{both\_new\_balanced} settings, which were designed to test increasingly difficult cold-start scenarios. In particular, the \texttt{new\_peptide} setting evaluates generalization to previously unseen peptides, the \texttt{new\_protein} setting evaluates generalization to previously unseen targets, and the \texttt{both\_new} setting evaluates simultaneous novelty on both sides.
+
+Two evaluation protocols were used in this study. The first was a matched protocol intended for direct comparison with prior baselines under closely aligned graph construction conditions. Under this setting, graph construction could include all labeled edges within the current split-specific graph, thereby approximating the transductive assumptions used in earlier methods. The second was a strict leakage-controlled inductive protocol, which was used for more conservative evaluation and for cold-peptide recommendation. Under this strict setting, training graph edges were restricted to positive interactions in the training split, while validation and test graphs were constructed only from split-specific nodes and excluded held-out peptide--target interaction edges. As a result, the model could not exploit test associations during message passing, which reduces information leakage and provides a more faithful estimate of inductive target recommendation performance.
+
+\subsection{Problem formulation}
+
+Let $\mathcal{P} = \{p_i\}_{i=1}^{N_p}$ denote the set of peptides and $\mathcal{T} = \{t_j\}_{j=1}^{N_t}$ denote the set of candidate protein targets. For each peptide--target pair $(p_i, t_j)$, the observed label $y_{ij} \in \{0,1\}$ indicates whether the pair is annotated as interacting. Given a query peptide $p_i$, the objective of PEARL is not only to estimate the interaction probability for an individual pair, but also to rank all candidate targets in $\mathcal{T}$ according to their relevance to $p_i$. Formally, PEARL learns a scoring function
+\begin{equation}
+f : \mathcal{P} \times \mathcal{T} \rightarrow [0,1],
+\end{equation}
+where
+\begin{equation}
+\hat{y}_{ij} = f(p_i, t_j)
+\end{equation}
+denotes the predicted relevance score of target $t_j$ for peptide $p_i$. Candidate targets are then ranked in descending order of $\hat{y}_{ij}$.
+
+\subsection{Overview of PEARL}
+
+PEARL is a heterogeneous graph-based framework designed for protein target recommendation in peptide repositioning. Given known peptide--protein association data and a query peptide with a large candidate target space, PEARL assigns each candidate target a recommendation score and generates a ranked list of plausible targets. As shown in Fig.~1, the overall workflow of PEARL comprises four major components: sequence feature extraction, heterogeneous graph construction, relation-aware graph encoding, and recommendation-oriented score refinement.
+
+Specifically, peptide and protein sequences are first transformed into dense representations using a pretrained ProtT5 encoder. Based on these sequence-derived features and known association data, PEARL constructs a heterogeneous graph in which peptides and protein targets are represented as distinct node types, while known peptide--protein associations and peptide--peptide similarity relationships are encoded as graph edges. A two-layer heterogeneous GraphSAGE encoder is then applied to propagate information across the graph and learn context-aware embeddings for both peptides and protein targets. For each candidate peptide--target pair, PEARL computes a base interaction score using a multilayer perceptron operating on multiple pairwise combinations of the learned embeddings. Finally, to better align prediction with the practical objective of target prioritization, PEARL further refines these scores by incorporating similarity-based evidence from related peptides, thereby producing a final ranked list of candidate protein targets.
+
+\subsection{Sequence feature extraction}
+
+PEARL first converts peptide and target protein sequences into dense sequence representations using a pretrained ProtT5 encoder. For a peptide $p_i$ with length $L_i^{(p)}$ and a target $t_j$ with length $L_j^{(t)}$, ProtT5 produces residue-level embeddings
+\begin{equation}
+\mathbf{E}_i^{(p)} \in \mathbb{R}^{L_i^{(p)} \times d},
+\qquad
+\mathbf{E}_j^{(t)} \in \mathbb{R}^{L_j^{(t)} \times d},
+\end{equation}
+where $d = 1024$ in the formal PEARL setting. To obtain fixed-length sequence features, residue-level embeddings are mean-pooled:
+\begin{equation}
+\mathbf{x}_i^{(p)} = \frac{1}{L_i^{(p)}} \sum_{\ell=1}^{L_i^{(p)}} \mathbf{E}_{i,\ell}^{(p)},
+\qquad
+\mathbf{x}_j^{(t)} = \frac{1}{L_j^{(t)}} \sum_{\ell=1}^{L_j^{(t)}} \mathbf{E}_{j,\ell}^{(t)}.
+\end{equation}
+
+Before graph encoding, node features are standardized within each node type using z-score normalization:
+\begin{equation}
+\tilde{\mathbf{x}} = \frac{\mathbf{x} - \boldsymbol{\mu}}{\boldsymbol{\sigma} + \varepsilon},
+\end{equation}
+where $\boldsymbol{\mu}$ and $\boldsymbol{\sigma}$ are the empirical mean and standard deviation estimated over nodes of the same type, and $\varepsilon$ is a small constant introduced for numerical stability.
+
+\subsection{Heterogeneous graph construction}
+
+Based on the labeled peptide--target pairs and sequence-derived similarities, PEARL constructs a heterogeneous graph
+\begin{equation}
+\mathcal{G} = (\mathcal{V}, \mathcal{E}),
+\end{equation}
+where the node set is composed of peptide nodes and target nodes,
+\begin{equation}
+\mathcal{V} = \mathcal{V}_p \cup \mathcal{V}_t.
+\end{equation}
+
+In the formal PEARL baseline, two relation types are used. First, known peptide--target associations define bipartite interaction edges
+\begin{equation}
+\mathcal{E}_{\mathrm{bind}} = \{(t_j, p_i)\},
+\end{equation}
+which connect target nodes to peptide nodes. Second, peptide--peptide similarity defines within-type edges
+\begin{equation}
+\mathcal{E}_{\mathrm{sim}}^{(p)}
+=
+\{(p_i, p_k) \mid S_{ik}^{(p)} > \alpha\},
+\end{equation}
+where $S_{ik}^{(p)}$ denotes the similarity score between peptides $p_i$ and $p_k$, and $\alpha$ is the similarity threshold. In the main configuration, $\alpha = 0.6$.
+
+The graph edge set used in the formal baseline is therefore
+\begin{equation}
+\mathcal{E} = \mathcal{E}_{\mathrm{bind}} \cup \mathcal{E}_{\mathrm{sim}}^{(p)}.
+\end{equation}
+PEARL can additionally incorporate target--target similarity relations as an extended variant, but these edges are disabled in the formal no-\texttt{prot\_sim} baseline unless otherwise stated. Node features for peptide and target nodes are initialized by their normalized ProtT5 sequence embeddings.
+
+\subsection{Relation-aware graph encoder}
+
+To learn context-aware node representations, PEARL applies a two-layer heterogeneous GraphSAGE encoder to $\mathcal{G}$. The initial hidden representation of each peptide node and target node is first obtained by type-specific linear projection:
+\begin{equation}
+\mathbf{h}_{i}^{(p,0)} = \phi \left( \mathbf{W}_{p}\tilde{\mathbf{x}}_{i}^{(p)} + \mathbf{b}_{p} \right),
+\qquad
+\mathbf{h}_{j}^{(t,0)} = \phi \left( \mathbf{W}_{t}\tilde{\mathbf{x}}_{j}^{(t)} + \mathbf{b}_{t} \right),
+\end{equation}
+where $\phi(\cdot)$ denotes the composition of ReLU activation, dropout, and batch normalization.
+
+For each graph layer $\ell$, PEARL performs relation-specific neighborhood aggregation. Let $\mathcal{R}$ denote the set of relation types and let $\mathcal{N}_{r}(v)$ denote the neighbors of node $v$ under relation $r$. The relation-specific message can be written as
+\begin{equation}
+\mathbf{m}_{v,r}^{(\ell+1)}
+=
+\mathrm{SAGE}_{r}^{(\ell)}
+\left(
+\mathbf{h}_{v}^{(\ell)},
+\{\mathbf{h}_{u}^{(\ell)} : u \in \mathcal{N}_{r}(v)\}
+\right).
+\end{equation}
+Messages from different relations are then combined by mean aggregation:
+\begin{equation}
+\bar{\mathbf{h}}_{v}^{(\ell+1)}
+=
+\frac{1}{|\mathcal{R}_{v}|}
+\sum_{r \in \mathcal{R}_{v}}
+\mathbf{m}_{v,r}^{(\ell+1)},
+\end{equation}
+where $\mathcal{R}_{v}$ is the set of active relations incident to node $v$.
+
+To preserve type-specific sequence information and stabilize optimization, PEARL further uses residual connections:
+\begin{equation}
+\mathbf{h}_{v}^{(\ell+1)}
+=
+\mathrm{BN}
+\left(
+\mathrm{Dropout}
+\left(
+\mathrm{ReLU}
+\left(
+\bar{\mathbf{h}}_{v}^{(\ell+1)}
++ \mathbf{W}_{\mathrm{res}}^{(\ell)} \mathbf{h}_{v}^{(\ell)}
+\right)
+\right)
+\right).
+\end{equation}
+
+In the formal model, the first graph layer maps node features from 512 to 256 dimensions using mean-type GraphSAGE aggregation, and the second layer maps 256 to 128 dimensions using GCN-style GraphSAGE aggregation. The final outputs are context-aware peptide embeddings $\mathbf{h}_{i}^{(p)} \in \mathbb{R}^{128}$ and target embeddings $\mathbf{h}_{j}^{(t)} \in \mathbb{R}^{128}$.
+
+\subsection{Pairwise interaction scoring}
+
+For each candidate peptide--target pair $(p_i, t_j)$, PEARL constructs a joint feature vector by combining multiple complementary interactions between the learned embeddings:
+\begin{equation}
+\mathbf{z}_{ij}
+=
+\left[
+\mathbf{h}_{i}^{(p)};
+\mathbf{h}_{j}^{(t)};
+\mathbf{h}_{i}^{(p)} \odot \mathbf{h}_{j}^{(t)};
+\left| \mathbf{h}_{i}^{(p)} - \mathbf{h}_{j}^{(t)} \right|;
+\left( \mathbf{h}_{i}^{(p)} - \mathbf{h}_{j}^{(t)} \right)^{2}
+\right],
+\end{equation}
+where $\odot$ denotes element-wise multiplication. The joint feature vector is then passed through a multilayer perceptron:
+\begin{equation}
+s_{ij} = \mathrm{MLP}(\mathbf{z}_{ij}),
+\qquad
+\hat{y}_{ij}^{(\mathrm{NN})} = \sigma(s_{ij}),
+\end{equation}
+where $s_{ij}$ is the interaction logit, $\sigma(\cdot)$ is the sigmoid function, and $\hat{y}_{ij}^{(\mathrm{NN})}$ denotes the base neural interaction score. In the formal PEARL configuration, the MLP uses the layer structure $640 \rightarrow 512 \rightarrow 128 \rightarrow 1$.
+
+\subsection{Similarity-based score refinement}
+
+Because the practical objective of peptide repositioning is target recommendation rather than isolated pairwise classification, PEARL further refines the base neural score by incorporating supervision propagated from similar peptides. For each peptide $p_i$, let $\mathcal{N}_{K}(i)$ denote the set of its top-$K$ neighbors whose similarity exceeds threshold $\alpha$. For a candidate target $t_j$, the similarity-based vote is defined as
+\begin{equation}
+v_{ij}
+=
+\frac{
+\sum\limits_{k \in \mathcal{N}_{K}(i)}
+w_{ik} \,
+\mathbb{I}(y_{kj}^{\mathrm{known}} \ge 0) \,
+y_{kj}^{\mathrm{known}}
+}{
+\sum\limits_{k \in \mathcal{N}_{K}(i)}
+w_{ik} \,
+\mathbb{I}(y_{kj}^{\mathrm{known}} \ge 0)
++ \varepsilon
+},
+\end{equation}
+where $w_{ik}$ denotes the similarity weight between peptides $p_i$ and $p_k$, $y_{kj}^{\mathrm{known}} \in \{-1,0,1\}$ indicates whether the label for pair $(p_k,t_j)$ is available and, if available, whether it is negative or positive, and $\mathbb{I}(\cdot)$ is the indicator function.
+
+The final PEARL score is then obtained by combining the neural interaction score and the similarity-based vote:
+\begin{equation}
+\hat{y}_{ij}
+=
+(1-\lambda)\hat{y}_{ij}^{(\mathrm{NN})}
++ \lambda v_{ij},
+\end{equation}
+where $\lambda \in [0,1]$ controls the contribution of similarity-based refinement. In the formal PEARL setting, $\lambda = 0.5$, $\alpha = 0.6$, and $K = 5$. Candidate targets are ranked according to $\hat{y}_{ij}$ to generate the final recommendation list for each query peptide.
+
+\subsection{Training objective}
+
+PEARL is trained using supervised binary classification on labeled peptide--target pairs. Let $\Omega_{\mathrm{train}}$ denote the set of training pairs. The optimization objective is binary cross-entropy:
+\begin{equation}
+\mathcal{L}
+=
+-\frac{1}{|\Omega_{\mathrm{train}}|}
+\sum_{(i,j)\in\Omega_{\mathrm{train}}}
+\left[
+y_{ij}\log \hat{y}_{ij}^{(\mathrm{NN})}
++ (1-y_{ij})\log \left(1-\hat{y}_{ij}^{(\mathrm{NN})}\right)
+\right].
+\end{equation}
+
+The similarity-based refinement module is not back-propagated through during optimization. Instead, the neural network is trained on the base interaction score $\hat{y}_{ij}^{(\mathrm{NN})}$, whereas the $\lambda$-vote refinement is applied during validation and testing to better align the prediction pipeline with the target recommendation objective.
+
+\subsection{Implementation details}
+
+Unless otherwise stated, the formal PEARL baseline used the no-\texttt{prot\_sim} setting with ProtT5-derived features, peptide similarity threshold $\alpha = 0.6$, similarity-vote fusion weight $\lambda = 0.5$, and top-$K = 5$ neighbors for recommendation refinement. The hidden, intermediate, and output dimensions were set to 512, 256, and 128, respectively. The dropout rate was 0.2. The graph encoder consisted of two heterogeneous GraphSAGE layers, with mean aggregation in the first layer and GCN-style aggregation in the second layer. Pairwise predictions were computed using the full pair scorer described above.
+
+Model optimization was performed with Adam using a learning rate of $1\times10^{-3}$ and a weight decay of $1\times10^{-3}$. Training was run for at most 150 epochs with an early-stopping patience of 20 epochs. To improve training stability, gradient norms were clipped to 5.0. For binary decision metrics, the operating threshold was selected on the validation set by maximizing the Matthews correlation coefficient:
+\begin{equation}
+\tau^{*}
+=
+\arg\max_{\tau \in \mathcal{T}}
+\mathrm{MCC}
+\left(
+\mathbf{y},
+\mathbb{I}(\hat{\mathbf{y}} \ge \tau)
+\right),
+\end{equation}
+where $\mathcal{T}$ denotes the threshold search space and $\hat{\mathbf{y}}$ denotes the predicted interaction scores. Model selection was performed according to validation AUC unless otherwise stated.
+
+\subsection{Evaluation metrics}
+
+For pairwise interaction prediction, model performance was evaluated using the area under the receiver operating characteristic curve (AUC), area under the precision--recall curve (AUPR), Matthews correlation coefficient (MCC), precision, recall, F1-score, and accuracy. These metrics were computed on held-out validation and test pairs under the corresponding split protocols.
+
+For target recommendation, PEARL ranks candidate targets for each query peptide according to the final score $\hat{y}_{ij}$. Ranking performance was assessed using mean reciprocal rank (MRR), Hit@$K$, Recall@$K$, and normalized discounted cumulative gain (NDCG)@$K$. Let $Q$ denote the set of query peptides and let $\mathrm{rank}_{q}$ denote the rank of the first positive target for query $q$. Then
+\begin{equation}
+\mathrm{MRR}
+=
+\frac{1}{|Q|}
+\sum_{q \in Q}
+\frac{1}{\mathrm{rank}_{q}},
+\end{equation}
+and
+\begin{equation}
+\mathrm{Hit@}K
+=
+\frac{1}{|Q|}
+\sum_{q \in Q}
+\mathbb{I}(\mathrm{rank}_{q} \le K).
+\end{equation}
+Let $P_q^{+}$ denote the set of positive targets associated with query peptide $q$. Then Recall@$K$ is computed as
+\begin{equation}
+\mathrm{Recall@}K
+=
+\frac{1}{|Q|}
+\sum_{q \in Q}
+\frac{1}{|P_q^{+}|}
+\sum_{r=1}^{K}
+\mathrm{rel}_{q,r},
+\end{equation}
+where $\mathrm{rel}_{q,r}$ denotes the relevance label at rank $r$ for query peptide $q$.
+For NDCG@$K$, the ranked relevance labels are used to compute
+\begin{equation}
+\mathrm{DCG@}K
+=
+\sum_{r=1}^{K}
+\frac{\mathrm{rel}_{r}}{\log_{2}(r+1)},
+\qquad
+\mathrm{NDCG@}K
+=
+\frac{\mathrm{DCG@}K}{\mathrm{IDCG@}K},
+\end{equation}
+where $\mathrm{rel}_{r}$ is the relevance label at rank $r$, and $\mathrm{IDCG@}K$ is the ideal discounted cumulative gain for the same query.
+
+For cold-peptide recommendation, two candidate-set settings were considered. In the main setting, each query peptide was evaluated against its held-out positive targets together with its known negative targets. In a more conservative lower-bound setting, each query peptide was evaluated against its held-out positive targets plus all remaining targets in the test graph. These two settings assess both verifiable ranking performance and a more realistic large-candidate recommendation scenario.
+
+\subsection{Statistical analysis}
+
+All predictive results were summarized over repeated split evaluations rather than from a single train--test partition. For random and cluster-based cross-validation experiments, performance was reported as the mean $\pm$ standard deviation across folds. For recommendation analysis, ranking metrics were first computed on a per-query-peptide basis and then averaged across all rankable query peptides within the corresponding test split. No labels from the held-out test associations were used during training under the strict leakage-controlled inductive protocol.
+
+No formal null-hypothesis significance tests were applied unless explicitly stated for a specific downstream analysis. Instead, model comparisons were primarily based on consistent improvements in cross-validated AUC, AUPR, MCC, and ranking metrics under matched experimental settings. All model hyperparameters reported for the formal baseline were fixed before final test summarization according to validation performance.

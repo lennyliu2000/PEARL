@@ -1,0 +1,9 @@
+# PEARL fusion model inference dependencies
+# Install PyTorch and DGL from their official sites matching your CUDA/CPU version (below are minimum-working references).
+torch>=2.0
+dgl>=1.1
+numpy>=1.23
+pandas>=1.5
+scikit-learn>=1.1
+biopython>=1.81      # BLAST/SW sequence similarity view (sequence view)
+rdkit>=2022.9        # Morgan fingerprint (only needed when seq_sim_kind=morgan; not required for the blast path)

@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+
+# Large similarity matrices generated at runtime (computed by prepare_matrices.py, not committed)
+data/UMPPI/sim_adj_matrix_protT5.csv
+data/UMPPI/sim_adj_matrix_blast.csv
+data/UMPPI/sim_adj_matrix.csv
+data/UMPPI/target_sim_adj_matrix.csv
+
+# Inference outputs
+results/
+runs/
+
+# Temporary / test files
+smoke_*.pt
+*.log
+core.*
+
+# Model weights are not distributed with the repository (place into checkpoints/ for local use)
+checkpoints/*.pt
+!checkpoints/.gitkeep
